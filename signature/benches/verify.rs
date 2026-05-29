@@ -8,6 +8,7 @@ use {
 };
 
 const BATCH_SIZES: [usize; 10] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512];
+const EQUIVALENCE_BENCH_SIZES: [usize; 4] = [2, 4, 8, 16];
 
 struct BenchData {
     messages: Vec<Vec<u8>>,
@@ -106,5 +107,34 @@ fn bench_verify(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_verify);
+fn bench_strict_vs_batch(c: &mut Criterion) {
+    let mut group = c.benchmark_group("signature_verify_strict_vs_batch");
+
+    for size in EQUIVALENCE_BENCH_SIZES {
+        let data = create_bench_data(size);
+
+        group.bench_with_input(BenchmarkId::new("sequential", size), &data, |b, data| {
+            b.iter(|| {
+                for (signature, (pubkey, message)) in data
+                    .signatures
+                    .iter()
+                    .zip(data.pubkeys.iter().zip(data.messages.iter()))
+                {
+                    assert!(black_box(signature)
+                        .verify(black_box(pubkey.as_slice()), black_box(message.as_slice()),));
+                }
+            });
+        });
+
+        group.bench_with_input(BenchmarkId::new("batch", size), &data, |b, data| {
+            b.iter(|| {
+                assert!(Signature::batch_verify(black_box(signature_data(data))));
+            });
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_verify, bench_strict_vs_batch);
 criterion_main!(benches);

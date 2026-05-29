@@ -374,6 +374,54 @@ mod tests {
             })
     }
 
+    fn verify_strict_loop<'a>(
+        mut items: impl ExactSizeIterator<Item = (&'a Signature, &'a [u8], &'a [u8])>,
+    ) -> bool {
+        items.all(|(signature, pubkey, message)| signature.verify(pubkey, message))
+    }
+
+    fn assert_batch_equivalent(
+        signatures: &[Signature],
+        pubkeys: &[[u8; 32]],
+        messages: &[Vec<u8>],
+    ) {
+        let serial = verify_strict_loop(batch_verify_items(signatures, pubkeys, messages));
+        let batch = Signature::batch_verify(batch_verify_items(signatures, pubkeys, messages));
+        assert_eq!(serial, batch);
+    }
+
+    fn corrupt_indices(size: usize) -> Vec<usize> {
+        if size == 0 {
+            return Vec::new();
+        }
+        let mut indices = Vec::from([0]);
+        if size > 1 {
+            indices.push(size / 2);
+        }
+        indices
+    }
+
+    fn off_curve_pubkey_bytes() -> [u8; 32] {
+        let off_curve_bytes = bs58::decode("9z5nJyQar1FUxVJxpBXzon6kHehbomeYiDaLi9WAMhCq")
+            .into_vec()
+            .unwrap();
+        let mut pubkey = [0u8; 32];
+        pubkey.copy_from_slice(&off_curve_bytes);
+        pubkey
+    }
+
+    fn malleable_signature() -> Signature {
+        let mut signature = [0u8; SIGNATURE_BYTES];
+        signature[0] = 1;
+        Signature::from(signature)
+    }
+
+    fn non_canonical_s_signature(valid: &Signature) -> Signature {
+        let mut bytes = valid.0;
+        bytes[63] = 0xff;
+        Signature::from(bytes)
+    }
+
     #[test]
     fn test_off_curve_pubkey_verify_fails() {
         // Golden point off the ed25519 curve
@@ -508,6 +556,40 @@ mod tests {
             &pubkeys,
             &bad_messages,
         )));
+    }
+
+    #[test]
+    fn test_batch_verify_equivalent_to_verify_strict_loop() {
+        const BATCH_SIZES: [usize; 5] = [1, 2, 4, 8, 16];
+
+        assert_batch_equivalent(&[], &[], &[]);
+
+        for size in BATCH_SIZES {
+            let (messages, pubkeys, signatures) = batch_verify_data(size);
+            assert_batch_equivalent(&signatures, &pubkeys, &messages);
+
+            for index in corrupt_indices(size) {
+                let mut bad_messages = messages.clone();
+                bad_messages[index] = b"wrong-message".to_vec();
+                assert_batch_equivalent(&signatures, &pubkeys, &bad_messages);
+
+                let mut bad_signatures = signatures.clone();
+                bad_signatures[index].0[0] ^= 0xff;
+                assert_batch_equivalent(&bad_signatures, &pubkeys, &messages);
+
+                let mut bad_signatures = signatures.clone();
+                bad_signatures[index] = malleable_signature();
+                assert_batch_equivalent(&bad_signatures, &pubkeys, &messages);
+
+                let mut bad_pubkeys = pubkeys.clone();
+                bad_pubkeys[index] = off_curve_pubkey_bytes();
+                assert_batch_equivalent(&signatures, &bad_pubkeys, &messages);
+
+                let mut bad_signatures = signatures.clone();
+                bad_signatures[index] = non_canonical_s_signature(&signatures[index]);
+                assert_batch_equivalent(&bad_signatures, &pubkeys, &messages);
+            }
+        }
     }
 
     #[test]
